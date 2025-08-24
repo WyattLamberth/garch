@@ -112,7 +112,7 @@ fn parse_file_range(file_range: &str) -> (String, usize, usize) {
 
 fn get_line_history(file_path: &str, start_line: usize, end_line: usize) -> Result<Vec<CommitInfo>, String> {
     let range = format!("{},{}", start_line, end_line);
-    let output = ProcessCommand::new("git")
+    let _output = ProcessCommand::new("git")
         .args([
             "log",
             "-L", &format!("{}:{}", range, file_path),
@@ -242,14 +242,72 @@ fn get_commit_changes(commit_hash: &str, file_path: &str, start_line: usize, end
             "show",
             commit_hash,
             "-L", &format!("{}:{}", range, file_path),
-            "--no-patch",
         ])
         .output()
         .map_err(|e| format!("Failed to run git show: {}", e))?;
 
-    // For now, return empty changes - we'd need to parse the diff output
-    // This is where we'd implement the actual diff parsing
-    Ok(vec![])
+    if !output.status.success() {
+        return Ok(vec![]); // Return empty if git show fails
+    }
+
+    let output_str = str::from_utf8(&output.stdout)
+        .map_err(|e| format!("Invalid UTF-8 in git show output: {}", e))?;
+
+    Ok(parse_diff_output(output_str))
+}
+
+fn parse_diff_output(diff_text: &str) -> Vec<LineChange> {
+    let mut changes = Vec::new();
+    let mut in_diff = false;
+    let mut line_number = 0;
+
+    for line in diff_text.lines() {
+        // Look for the @@ hunk header to start parsing
+        if line.starts_with("@@") {
+            in_diff = true;
+            // Parse the line number from @@ -old_start,old_count +new_start,new_count @@
+            if let Some(plus_pos) = line.find('+') {
+                if let Some(comma_pos) = line[plus_pos..].find(',') {
+                    let start_str = &line[plus_pos + 1..plus_pos + comma_pos];
+                    line_number = start_str.parse().unwrap_or(1);
+                } else if let Some(space_pos) = line[plus_pos..].find(' ') {
+                    let start_str = &line[plus_pos + 1..plus_pos + space_pos];
+                    line_number = start_str.parse().unwrap_or(1);
+                }
+            }
+            continue;
+        }
+
+        if !in_diff {
+            continue;
+        }
+
+        // Stop at the next commit or end of diff
+        if line.starts_with("commit ") || line.starts_with("diff --git") {
+            break;
+        }
+
+        if line.starts_with('+') && !line.starts_with("+++") {
+            changes.push(LineChange {
+                line_number,
+                change_type: ChangeType::Added,
+                content: line[1..].to_string(), // Remove the + prefix
+            });
+            line_number += 1;
+        } else if line.starts_with('-') && !line.starts_with("---") {
+            changes.push(LineChange {
+                line_number,
+                change_type: ChangeType::Removed,
+                content: line[1..].to_string(), // Remove the - prefix
+            });
+            // Don't increment line_number for removed lines
+        } else if line.starts_with(' ') {
+            // Context line - increment line number but don't show it
+            line_number += 1;
+        }
+    }
+
+    changes
 }
 
 fn display_change(change: &LineChange) {
