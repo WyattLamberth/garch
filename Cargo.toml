@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 clap = "4.0"
 crossterm = "0.29.0"
+syntect = "5.1"
