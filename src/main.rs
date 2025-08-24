@@ -1,4 +1,11 @@
 use clap::{Arg, Command};
+use crossterm::{
+    event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind, DisableMouseCapture, EnableMouseCapture},
+    execute,
+    style::{Color, Print, ResetColor, SetForegroundColor, SetBackgroundColor},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use std::io::{self, Write};
 use std::process::Command as ProcessCommand;
 use std::str;
 
@@ -24,6 +31,23 @@ enum ChangeType {
     Modified,
 }
 
+#[derive(Debug, Clone)]
+struct BlameLine {
+    line_number: usize,
+    author: String,
+    date: String,
+    commit_hash: String,
+    content: String,
+}
+
+#[derive(Debug)]
+struct FileVersion {
+    commit_hash: String,
+    commit_date: String,
+    commit_message: String,
+    blame_lines: Vec<BlameLine>,
+}
+
 fn main() {
     let matches = Command::new("garch")
         .about("Explore the evolution of code through git history")
@@ -34,8 +58,8 @@ fn main() {
                     Arg::new("file_range")
                         .help("File and line range (e.g., src/main.rs:10-20)")
                         .required(true)
-                        .index(1),
-                ),
+                        .index(1)
+                )
         )
         .subcommand(
             Command::new("file")
@@ -44,8 +68,8 @@ fn main() {
                     Arg::new("file_path")
                         .help("Path to the file")
                         .required(true)
-                        .index(1),
-                ),
+                        .index(1)
+                )
         )
         .get_matches();
 
@@ -67,24 +91,48 @@ fn main() {
 fn handle_lines_command(file_range: &str) {
     let (file_path, start_line, end_line) = parse_file_range(file_range);
     
-    println!("📜 Evolution of {}:{}-{}\n", file_path, start_line, end_line);
-    
     match get_line_history(&file_path, start_line, end_line) {
         Ok(commits) => {
-            display_commit_history(&commits, &file_path, start_line, end_line);
+            if commits.is_empty() {
+                println!("No history found for {}:{}-{}", file_path, start_line, end_line);
+                return;
+            }
+            
+            // Run interactive viewer for line range by building file versions
+            match get_file_versions(&file_path) {
+                Ok(versions) => {
+                    if let Err(e) = run_interactive_viewer(&file_path, versions, start_line, end_line) {
+                        eprintln!("Error running interactive viewer: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error getting file versions: {}", e);
+                    std::process::exit(1);
+                }
+            }
         }
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error getting line history: {}", e);
+            std::process::exit(1);
         }
     }
 }
 
 fn handle_file_command(file_path: &str) {
-    println!("📜 Evolution of {}\n", file_path);
+    println!("Loading file history for {}...", file_path);
     
-    match get_file_history(file_path) {
-        Ok(commits) => {
-            display_file_history(&commits, file_path);
+    match get_file_versions(file_path) {
+        Ok(versions) => {
+            if versions.is_empty() {
+                println!("No git history found for {}", file_path);
+                return;
+            }
+            
+            match run_interactive_viewer(file_path, versions, 1, usize::MAX) {
+                Ok(_) => {},
+                Err(e) => eprintln!("Error running interactive viewer: {}", e),
+            }
         }
         Err(e) => {
             eprintln!("Error: {}", e);
@@ -96,7 +144,6 @@ fn parse_file_range(file_range: &str) -> (String, usize, usize) {
     if let Some(colon_pos) = file_range.rfind(':') {
         let file_path = file_range[..colon_pos].to_string();
         let range_part = &file_range[colon_pos + 1..];
-        
         if let Some(dash_pos) = range_part.find('-') {
             let start_line: usize = range_part[..dash_pos].parse().unwrap_or(1);
             let end_line: usize = range_part[dash_pos + 1..].parse().unwrap_or(start_line);
@@ -108,6 +155,25 @@ fn parse_file_range(file_range: &str) -> (String, usize, usize) {
     } else {
         (file_range.to_string(), 1, usize::MAX)
     }
+}
+
+fn format_timestamp(timestamp: i64) -> String {
+    // Simple timestamp formatting - in a real app you'd use chrono
+    use std::time::{UNIX_EPOCH, Duration};
+    
+    if let Some(datetime) = UNIX_EPOCH.checked_add(Duration::from_secs(timestamp as u64)) {
+        let days = datetime.duration_since(UNIX_EPOCH).unwrap().as_secs() / 86400;
+        
+        // Very rough date calculation - just for demo
+        let year = 1970 + (days / 365);
+        let day_of_year = days % 365;
+        let month = (day_of_year / 30) + 1;
+        let day = (day_of_year % 30) + 1;
+        
+        return format!("{:04}-{:02}-{:02}", year, month.min(12), day.min(31));
+    }
+    
+    "unknown".to_string()
 }
 
 fn get_line_history(file_path: &str, start_line: usize, end_line: usize) -> Result<Vec<CommitInfo>, String> {
@@ -124,10 +190,10 @@ fn get_line_history(file_path: &str, start_line: usize, end_line: usize) -> Resu
 
     if !output.status.success() {
         return Err(format!("Git command failed: {}", 
-            str::from_utf8(&output.stderr).unwrap_or("unknown error")));
+            std::str::from_utf8(&output.stderr).unwrap_or("unknown error")));
     }
 
-    let output_str = str::from_utf8(&output.stdout)
+    let output_str = std::str::from_utf8(&output.stdout)
         .map_err(|e| format!("Invalid UTF-8 in git output: {}", e))?;
 
     let mut commits = Vec::new();
@@ -157,10 +223,10 @@ fn get_file_history(file_path: &str) -> Result<Vec<CommitInfo>, String> {
 
     if !output.status.success() {
         return Err(format!("Git command failed: {}", 
-            str::from_utf8(&output.stderr).unwrap_or("unknown error")));
+            std::str::from_utf8(&output.stderr).unwrap_or("unknown error")));
     }
 
-    let output_str = str::from_utf8(&output.stdout)
+    let output_str = std::str::from_utf8(&output.stdout)
         .map_err(|e| format!("Invalid UTF-8 in git output: {}", e))?;
 
     let commits: Vec<CommitInfo> = output_str
@@ -177,12 +243,32 @@ fn parse_commit_line(line: &str) -> Option<CommitInfo> {
         Some(CommitInfo {
             hash: parts[0].to_string(),
             date: parts[1].to_string(),
-            author: abbreviate_author(parts[2]),
-            message: parts[3..].join("|"), // In case message contains |
+            author: parts[2].to_string(),
+            message: parts[3].to_string(),
         })
     } else {
         None
     }
+}
+
+fn get_author_color(author: &str) -> Color {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    
+    let mut hasher = DefaultHasher::new();
+    author.hash(&mut hasher);
+    let hash = hasher.finish();
+    
+    let colors = [
+        Color::Red,
+        Color::DarkCyan,
+        Color::DarkGreen,
+        Color::DarkYellow,
+        Color::DarkBlue,
+        Color::DarkMagenta,
+        Color::DarkRed,
+    ];
+    colors[hash as usize % colors.len()]
 }
 
 fn abbreviate_author(author: &str) -> String {
@@ -194,45 +280,247 @@ fn abbreviate_author(author: &str) -> String {
     }
 }
 
-fn display_commit_history(commits: &[CommitInfo], file_path: &str, start_line: usize, end_line: usize) {
-    for (i, commit) in commits.iter().enumerate() {
-        let connector = if i == commits.len() - 1 { "└─" } else { "├─" };
-        
-        println!("{} Commit {} ({}) - {}", 
-            connector,
-            &commit.hash[..7],
-            commit.date,
-            commit.author
-        );
-        println!("│  \"{}\"", commit.message);
-        
-        // Get the actual changes for this commit
-        if let Ok(changes) = get_commit_changes(&commit.hash, file_path, start_line, end_line) {
-            for change in changes {
-                display_change(&change);
+fn get_file_versions(file_path: &str) -> Result<Vec<FileVersion>, String> {
+    let commits = get_file_history(file_path)?;
+    let mut versions = Vec::new();
+    
+    for commit in commits {
+        match get_blame_for_commit(&commit.hash, file_path) {
+            Ok(blame_lines) => {
+                versions.push(FileVersion {
+                    commit_hash: commit.hash.clone(),
+                    commit_date: commit.date,
+                    commit_message: commit.message,
+                    blame_lines,
+                });
             }
-        }
-        
-        if i < commits.len() - 1 {
-            println!("│");
+            Err(_) => continue, // Skip commits where we can't get blame
         }
     }
+    
+    Ok(versions)
 }
 
-fn display_file_history(commits: &[CommitInfo], _file_path: &str) {
-    println!("Recent commits affecting this file:\n");
+fn get_blame_for_commit(commit_hash: &str, file_path: &str) -> Result<Vec<BlameLine>, String> {
+    let output = ProcessCommand::new("git")
+        .args([
+            "blame",
+            "--line-porcelain",
+            commit_hash,
+            "--",
+            file_path,
+        ])
+        .output()
+        .map_err(|e| format!("Failed to run git blame: {}", e))?;
+
+    if !output.status.success() {
+        return Err("Git blame failed".to_string());
+    }
+
+    let output_str = std::str::from_utf8(&output.stdout)
+        .map_err(|e| format!("Invalid UTF-8 in git blame output: {}", e))?;
+
+    Ok(parse_blame_output(output_str))
+}
+
+fn parse_blame_output(blame_text: &str) -> Vec<BlameLine> {
+    let mut blame_lines = Vec::new();
+    let lines: Vec<&str> = blame_text.lines().collect();
+    let mut i = 0;
     
-    for commit in commits.iter().take(10) { // Show last 10 commits
-        println!("{} │ {} │ {}", 
-            commit.date,
-            commit.author,
-            commit.message
+    while i < lines.len() {
+        if let Some(line) = lines.get(i) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 3 && parts[0].len() >= 7 {
+                let commit_hash = parts[0].to_string();
+                let line_number: usize = parts[2].parse().unwrap_or(0);
+                
+                // Look for author and date in the following lines
+                let mut author = String::new();
+                let mut date = String::new();
+                let mut content = String::new();
+                
+                i += 1;
+                while i < lines.len() {
+                    if let Some(info_line) = lines.get(i) {
+                        if info_line.starts_with("author ") {
+                            author = info_line[7..].to_string();
+                        } else if info_line.starts_with("author-time ") {
+                            // Convert timestamp to readable date
+                            if let Ok(timestamp) = info_line[12..].parse::<i64>() {
+                                date = format_timestamp(timestamp);
+                            }
+                        } else if info_line.starts_with('\t') {
+                            content = info_line[1..].to_string(); // Remove leading tab
+                            i += 1;
+                            break;
+                        }
+                    }
+                    i += 1;
+                }
+                
+                blame_lines.push(BlameLine {
+                    line_number,
+                    author: abbreviate_author(&author),
+                    date,
+                    commit_hash: commit_hash[..7].to_string(),
+                    content,
+                });
+            } else {
+                i += 1;
+            }
+        } else {
+            break;
+        }
+    }
+    
+    blame_lines
+}
+
+fn run_interactive_viewer(file_path: &str, versions: Vec<FileVersion>, start_line: usize, end_line: usize) -> Result<(), Box<dyn std::error::Error>> {
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    
+    let mut current_version = 0;
+    let mut scroll_offset = 0;
+    
+    loop {
+        let (terminal_width, terminal_height) = crossterm::terminal::size()?;
+        let content_height = terminal_height as usize - 3; // Reserve space for header and footer
+        
+        // Clear screen and draw content
+        execute!(stdout, crossterm::terminal::Clear(crossterm::terminal::ClearType::All))?;
+        execute!(stdout, crossterm::cursor::MoveTo(0, 0))?;
+        
+        // Header with colors
+        let version = &versions[current_version];
+        execute!(stdout, SetForegroundColor(Color::White), SetBackgroundColor(Color::DarkBlue))?;
+        print!("📜 {} (commit {} of {}) - {}",
+            file_path, 
+            current_version + 1, 
+            versions.len(),
+            version.commit_date
         );
+        // Pad to full width
+        let header_len = format!("📜 {} (commit {} of {}) - {}", file_path, current_version + 1, versions.len(), version.commit_date).len();
+        if header_len < terminal_width as usize {
+            print!("{}", " ".repeat(terminal_width as usize - header_len));
+        }
+        execute!(stdout, ResetColor)?;
+        println!("\r");
+        
+        execute!(stdout, SetForegroundColor(Color::Grey))?;
+        print!("Commit: {} - {}", version.commit_hash, version.commit_message);
+        execute!(stdout, ResetColor)?;
+        println!("\r");
+        
+        execute!(stdout, SetForegroundColor(Color::DarkGrey))?;
+        println!("{}\r", "─".repeat(terminal_width as usize));
+        execute!(stdout, ResetColor)?;
+        
+        // Content with colors (filtered by line range)
+        let filtered_lines: Vec<&BlameLine> = version.blame_lines.iter()
+            .filter(|line| line.line_number >= start_line && line.line_number <= end_line)
+            .collect();
+        let display_end = (scroll_offset + content_height - 1).min(filtered_lines.len());
+        for i in scroll_offset..display_end {
+            if let Some(line) = filtered_lines.get(i) {
+                // Line number
+                execute!(stdout, SetForegroundColor(Color::DarkGrey))?;
+                print!("{:3} │ ", line.line_number);
+                execute!(stdout, ResetColor)?;
+                // Author with color
+                let author_color = get_author_color(&line.author);
+                execute!(stdout, SetForegroundColor(author_color))?;
+                print!("{:8}", line.author);
+                execute!(stdout, ResetColor)?;
+                // Date
+                execute!(stdout, SetForegroundColor(Color::DarkGrey))?;
+                print!(" │ {:10} │ ", line.date);
+                execute!(stdout, ResetColor)?;
+                // Content
+                println!("{}\r", line.content);
+            }
+        }
+        // Footer with colors
+        execute!(stdout, crossterm::cursor::MoveTo(0, terminal_height - 1))?;
+        execute!(stdout, SetForegroundColor(Color::White), SetBackgroundColor(Color::DarkGrey))?;
+        print!("← → : Navigate versions    ↑ ↓ : Scroll    Mouse: Scroll    q : Quit");
+        // Pad footer to full width
+        let footer_text = "← → : Navigate versions    ↑ ↓ : Scroll    Mouse: Scroll    q : Quit";
+        if footer_text.len() < terminal_width as usize {
+            print!("{}", " ".repeat(terminal_width as usize - footer_text.len()));
+        }
+        execute!(stdout, ResetColor)?;
+        print!("\r");
+        stdout.flush()?;
+        // Handle input including mouse
+        match event::read()? {
+            Event::Key(key) => {
+                if key.kind == KeyEventKind::Press {
+                    match key.code {
+                        KeyCode::Char('q') => break,
+                        KeyCode::Left => {
+                            if current_version > 0 {
+                                current_version -= 1;
+                                scroll_offset = 0;
+                            }
+                        }
+                        KeyCode::Right => {
+                            if current_version < versions.len() - 1 {
+                                current_version += 1;
+                                scroll_offset = 0;
+                            }
+                        }
+                        KeyCode::Up => {
+                            if scroll_offset > 0 {
+                                scroll_offset -= 1;
+                            }
+                        }
+                        KeyCode::Down => {
+                            if scroll_offset + content_height < filtered_lines.len() {
+                                scroll_offset += 1;
+                            }
+                        }
+                        KeyCode::PageUp => {
+                            scroll_offset = scroll_offset.saturating_sub(content_height / 2);
+                        }
+                        KeyCode::PageDown => {
+                            scroll_offset = (scroll_offset + content_height / 2).min(filtered_lines.len().saturating_sub(content_height));
+                        }
+                        KeyCode::Home => {
+                            scroll_offset = 0;
+                        }
+                        KeyCode::End => {
+                            scroll_offset = filtered_lines.len().saturating_sub(content_height);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Event::Mouse(mouse) => {
+                match mouse.kind {
+                    MouseEventKind::ScrollUp => {
+                        scroll_offset = scroll_offset.saturating_sub(3); // Scroll 3 lines at a time
+                    }
+                    MouseEventKind::ScrollDown => {
+                        if scroll_offset + content_height + 3 <= filtered_lines.len() {
+                            scroll_offset += 3;
+                        } else {
+                            scroll_offset = filtered_lines.len().saturating_sub(content_height);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
     }
-    
-    if commits.len() > 10 {
-        println!("... and {} more commits", commits.len() - 10);
-    }
+    // Cleanup
+    disable_raw_mode()?;
+    execute!(stdout, LeaveAlternateScreen)?;
+    Ok(())
 }
 
 fn get_commit_changes(commit_hash: &str, file_path: &str, start_line: usize, end_line: usize) -> Result<Vec<LineChange>, String> {
@@ -250,7 +538,7 @@ fn get_commit_changes(commit_hash: &str, file_path: &str, start_line: usize, end
         return Ok(vec![]); // Return empty if git show fails
     }
 
-    let output_str = str::from_utf8(&output.stdout)
+    let output_str = std::str::from_utf8(&output.stdout)
         .map_err(|e| format!("Invalid UTF-8 in git show output: {}", e))?;
 
     Ok(parse_diff_output(output_str))
