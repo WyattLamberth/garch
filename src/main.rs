@@ -163,9 +163,14 @@ fn handle_lines_command(file_range: &str, reverse: bool) {
                 return;
             }
             
-            // Run interactive viewer for line range by building file versions
-            match get_file_versions(&file_path) {
+            // Build file versions that only include commits where the specified lines exist
+            match get_file_versions_for_lines(&file_path, start_line, end_line) {
                 Ok(mut versions) => {
+                    if versions.is_empty() {
+                        println!("No versions found where lines {}-{} exist in {}", start_line, end_line, file_path);
+                        return;
+                    }
+                    
                     // By default, show oldest first (reverse the git log order)
                     // If reverse flag is set, keep newest first
                     if !reverse {
@@ -301,6 +306,7 @@ fn get_line_history(file_path: &str, start_line: usize, end_line: usize) -> Resu
     let output = ProcessCommand::new("git")
         .args([
             "log",
+            // Note: --follow is not compatible with -L, git will track renames automatically for -L
             "-L", &format!("{}:{}", range, file_path),
             "--pretty=format:%H|%ad|%an|%s",
             "--date=short",
@@ -421,6 +427,34 @@ fn get_file_versions(file_path: &str) -> Result<Vec<FileVersion>, String> {
     Ok(versions)
 }
 
+fn get_file_versions_for_lines(file_path: &str, start_line: usize, end_line: usize) -> Result<Vec<FileVersion>, String> {
+    // Get commits that touched the specific line range using git log -L
+    let commits = get_line_history(file_path, start_line, end_line)?;
+    let mut versions = Vec::new();
+    
+    for commit in commits {
+        match get_blame_for_commit(&commit.hash, file_path) {
+            Ok(blame_lines) => {
+                // Check if any of the specified lines exist in this commit
+                let has_target_lines = blame_lines.iter()
+                    .any(|line| line.line_number >= start_line && line.line_number <= end_line);
+                
+                if has_target_lines {
+                    versions.push(FileVersion {
+                        commit_hash: commit.hash.clone(),
+                        commit_date: commit.date,
+                        commit_message: commit.message,
+                        blame_lines,
+                    });
+                }
+            }
+            Err(_) => continue, // Skip commits where we can't get blame
+        }
+    }
+    
+    Ok(versions)
+}
+
 fn get_blame_for_commit(commit_hash: &str, file_path: &str) -> Result<Vec<BlameLine>, String> {
     let output = ProcessCommand::new("git")
         .args([
@@ -434,7 +468,12 @@ fn get_blame_for_commit(commit_hash: &str, file_path: &str) -> Result<Vec<BlameL
         .map_err(|e| format!("Failed to run git blame: {}", e))?;
 
     if !output.status.success() {
-        return Err("Git blame failed".to_string());
+        let stderr = std::str::from_utf8(&output.stderr).unwrap_or("unknown error");
+        // Check if this is because the file doesn't exist in this commit
+        if stderr.contains("no such path") || stderr.contains("does not exist") {
+            return Err(format!("File does not exist in commit {}", commit_hash));
+        }
+        return Err(format!("Git blame failed: {}", stderr));
     }
 
     let output_str = std::str::from_utf8(&output.stdout)
@@ -552,8 +591,16 @@ fn run_interactive_viewer(file_path: &str, versions: Vec<FileVersion>, _start_li
         // Calculate filtered lines first so they're available for both display and navigation
         let version = &versions[current_version];
         
-        let filtered_lines: Vec<&BlameLine> = version.blame_lines.iter()
-            .collect(); // Show all lines, don't filter by line range
+        // Filter lines based on the specified range (only for lines command, not file command)
+        let filtered_lines: Vec<&BlameLine> = if _start_line == 1 && _end_line == usize::MAX {
+            // File command - show all lines
+            version.blame_lines.iter().collect()
+        } else {
+            // Lines command - filter to the specified range
+            version.blame_lines.iter()
+                .filter(|line| line.line_number >= _start_line && line.line_number <= _end_line)
+                .collect()
+        };
 
         // Smart bounds checking - try to preserve the viewing position
         let max_scroll = if filtered_lines.len() <= content_height {
@@ -690,8 +737,7 @@ fn run_interactive_viewer(file_path: &str, versions: Vec<FileVersion>, _start_li
         // Footer with colors
         execute!(stdout, crossterm::cursor::MoveTo(0, terminal_height - 1))?;
         execute!(stdout, SetForegroundColor(Color::White), SetBackgroundColor(Color::DarkGrey))?;
-        let footer_text = format!("← Older    Newer → │ ↑ ↓ : Scroll │ Debug: scroll={} lines={} max={} │ q : Quit", 
-            scroll_offset, filtered_lines.len(), max_scroll);
+        let footer_text = "← Older    Newer → │ ↑ ↓ : Scroll │ Mouse: Scroll │ q : Quit";
         print!("{}", footer_text);
         // Pad footer to full width
         if footer_text.len() < terminal_width as usize {

@@ -1,10 +1,20 @@
 # garch - Git Archaeology
 
-A command-line tool that transforms git history into an explorable time dimension. Instead of viewing code as static text, `garch` lets you navigate through every iteration and understand the evolution of your codebase.
+A command-line tool for exploring git history as an interactive timeline. Navigate through every version of your code to understand how it evolved, who wrote what, and why changes were made.
 
 ## What is Git Archaeology?
 
-Most files exist only in the present moment - you can't step back through time to see how they evolved. But git gives code an extra dimension: a traversable timeline of every change. `garch` makes this timeline accessible and intuitive to explore.
+Most files exist only in the present moment - you can't step back through time to see how they evolved. But git gives code an extra dimension: a traversable timeline of every change. `garch` makes this timeline accessible and intuitive to explore with an interactive terminal interface.
+
+## Features
+
+- **🕰️ Interactive Time Navigation**: Step through commits with arrow keys to see how code evolved
+- **🎨 Syntax Highlighting**: Full syntax highlighting powered by the same engine used in VS Code
+- **👥 Author Tracking**: See who wrote each line, with color-coded author identification
+- **📊 Commit Context**: View commit messages, dates, and hashes for full historical context
+- **⚡ Performance Optimized**: Pre-rendered syntax highlighting and efficient terminal rendering
+- **🖱️ Mouse Support**: Scroll with mouse wheel, navigate with keyboard or mouse
+- **🔍 Smart Navigation**: Maintains viewing position when switching between commits
 
 ## Installation
 
@@ -23,65 +33,79 @@ cargo install --path .
 
 ## Usage
 
-### Trace Line Evolution
-
-See how specific lines evolved through history:
-
-```bash
-# Trace lines 10-20 in a file
-garch lines src/auth.rs:10-20
-
-# Trace a single line
-garch lines src/main.rs:45
-
-# Trace an entire function (specify the range)
-garch lines lib/utils.py:120-150
-```
-
-Output shows a timeline of changes:
-
-```
-📜 Evolution of src/auth.rs:10-20
-
-├─ Commit abc1234 (2024-01-15) - Alice C.
-│  "Add basic password validation"
-│  + def validate_password(password):
-│  +     if len(password) < 8:
-│  +         return False
-│  +     return True
-│
-└─ Commit def5678 (2024-02-03) - Bob S.
-   "Strengthen password requirements" 
-   ~ def validate_password(password):
-   ~     if len(password) < 12:  # was 8
-   ~         return False
-   +     if not any(c.isupper() for c in password):
-   +         return False
-   ~     return True
-```
-
 ### Interactive File Explorer
 
-Navigate through different versions of a file:
+Navigate through the complete history of a file:
 
 ```bash
+# View entire file history
 garch file src/main.rs
+
+# View file history starting from newest commits
+garch file src/auth.rs --reverse
 ```
 
-This launches an interactive terminal interface where you can:
+### Line Range Analysis
 
-- **← →** Navigate between different commits of the file
+Explore the evolution of specific lines:
+
+```bash
+# View evolution of lines 10-20
+garch lines src/auth.rs:10-20
+
+# View evolution of a single line
+garch lines src/main.rs:45
+
+# View lines starting from newest commits
+garch lines lib.py:100-150 --reverse
+```
+
+### Command Options
+
+```bash
+# Basic commands
+garch file <filepath>                    # View entire file history
+garch lines <filepath:start-end>         # View specific line range
+garch lines <filepath:linenumber>        # View single line
+
+# Options
+--reverse, -r                            # Start with newest commits first
+--help                                   # Show detailed help
+```
+
+### Interactive Controls
+
+The terminal interface provides intuitive navigation:
+
+- **← →** Navigate between different commits (chronological order)
 - **↑ ↓** Scroll through the current file version  
 - **Page Up/Down** Jump larger chunks through the file
 - **Mouse wheel** Scroll (3 lines at a time)
 - **Home/End** Jump to top/bottom of file
 - **q** Quit
 
-The interface shows each line with:
-- Line number
-- Author (color-coded for easy recognition)
-- Last modification date
-- Line content
+### What You See
+
+Each view shows:
+```
+filename.rs | 5 of 12 | 2024-01-15 14:30:22
+abc1234 | Added error handling and validation
+
+┌─ alice.smith (2024-01-15) [abc1234] Added error handling  
+│  45 │ if let Some(error) = result.err() {
+│  46 │     log::error!("Processing failed: {}", error);
+│  47 │     return Err(error);
+│  48 │ }
+┌─ bob.jones (2024-01-20) [def5678] Improved error messages
+│  49 │ log::info!("Operation completed successfully");
+│  50 │ Ok(result)
+```
+
+- **File header**: Filename, commit position, and date
+- **Commit info**: Hash and commit message
+- **Author sections**: Grouped by who wrote the code, with full commit context
+- **Line numbers**: Original line numbers from the file
+- **Syntax highlighting**: Full color syntax highlighting for the file type
 
 ## Use Cases
 
@@ -110,48 +134,82 @@ This approach ensures compatibility with all git repositories and takes advantag
 ### Investigating a Bug
 
 ```bash
-# You found a bug on line 127 of user_service.py
+# You found a bug in user_service.py - view the entire file
+garch file src/user_service.py
+
+# Or focus on the problematic lines
 garch lines src/user_service.py:120-135
 
-# This shows you:
-# - When the problematic code was introduced
-# - Who wrote it and why (commit messages)
-# - How it evolved over time
-# - What the original implementation looked like
+# Navigate with ← → to see:
+# - When the bug was introduced
+# - Who wrote the code and their commit message
+# - How the code looked before the bug
+# - What changes were made over time
 ```
 
 ### Understanding Complex Code
 
 ```bash
-# You're looking at a confusing function
+# You're looking at a confusing algorithm
 garch file src/complex_algorithm.py
 
-# Navigate through the file's history to see:
-# - How it started (probably simple)
-# - What requirements forced complexity
-# - Who worked on different parts
-# - The reasoning behind each change
+# Or focus on the specific complex function
+garch lines src/complex_algorithm.py:45-80
+
+# Step through the history to see:
+# - How it started (probably much simpler)
+# - What requirements drove the complexity
+# - Who worked on different sections
+# - The evolution of the approach
 ```
 
 ### Code Review Context
 
 ```bash
-# Before reviewing a change to authentication logic
-garch lines src/auth/validator.rs:50-80
+# Before reviewing changes to authentication logic
+garch file src/auth/validator.rs
 
-# This gives you context:
+# Or examine specific authentication functions
+garch lines src/auth/validator.rs:25-60
+
+# Navigate through commits to understand:
 # - Previous approaches that were tried
-# - Why certain decisions were made
-# - Potential edge cases from history
-# - Who has domain knowledge
+# - Why certain design decisions were made
+# - Historical context for current implementation
+# - Who has expertise in this area
+```
+
+### Learning from Evolution
+
+```bash
+# Study how a configuration file evolved
+garch file config/database.yml
+
+# See API endpoint changes over time
+garch lines src/api/users.rs:100-200 --reverse
+
+# Understand the progression:
+# - Simple initial implementation
+# - Performance optimizations added over time
+# - Bug fixes and edge case handling
+# - Refactoring and architectural changes
 ```
 
 ## Technical Details
 
-- **Language**: Rust (for performance and reliability)
-- **Terminal UI**: crossterm (cross-platform terminal control)
-- **Git Integration**: Shell commands (maximum compatibility)
-- **Performance**: Git operations are cached, UI rendering is optimized
+- **Language**: Rust (for performance and cross-platform compatibility)
+- **Terminal UI**: crossterm (cross-platform terminal control with mouse support)
+- **Syntax Highlighting**: syntect (the same highlighting engine used by Sublime Text and VS Code)
+- **Git Integration**: Shell commands via `git log -L` and `git blame --line-porcelain` (maximum compatibility)
+- **Performance**: Pre-rendered syntax highlighting, efficient screen updates, optimized git operations
+- **Platform Support**: Windows, macOS, Linux
+
+### Performance Optimizations
+
+- **Pre-rendered highlighting**: Syntax highlighting is computed once per commit and cached
+- **Smart rendering**: Only updates changed screen regions to reduce flicker
+- **Efficient scrolling**: Maintains smooth navigation even in large files
+- **Git operation caching**: Minimizes repeated git command execution
 
 ## Contributing
 
@@ -178,12 +236,18 @@ RUST_LOG=debug cargo run -- lines src/main.rs:1-10
 
 ## Roadmap
 
-- [ ] Syntax highlighting for different file types
-- [ ] Search within file versions
-- [ ] Export functionality (HTML reports)
-- [ ] Support for comparing two arbitrary versions
-- [ ] Integration with external diff tools
-- [ ] Performance optimizations for very large repositories
+- [x] ✅ Interactive terminal interface with keyboard/mouse navigation
+- [x] ✅ Syntax highlighting for all major programming languages  
+- [x] ✅ Author tracking with visual grouping and color coding
+- [x] ✅ Commit context display (messages, dates, hashes)
+- [x] ✅ Performance optimizations for smooth scrolling
+- [ ] 🔄 Search within file versions
+- [ ] 🔄 Export functionality (HTML reports, static site generation)
+- [ ] 🔄 Side-by-side diff view between any two commits
+- [ ] 🔄 Integration with external diff/merge tools
+- [ ] 🔄 Git blame integration for line-level commit details
+- [ ] 🔄 Support for binary file evolution tracking
+- [ ] 🔄 Plugin system for custom file type handling
 
 ## License
 
