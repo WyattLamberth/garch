@@ -2,6 +2,15 @@
 name = "garch"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "Git Archaeology - Explore the evolution of code through git history interactively"
+repository = "https://github.com/wyattlamberth/garch"
+homepage = "https://github.com/wyattlamberth/garch"
+documentation = "https://github.com/wyattlamberth/garch"
+readme = "readme.md"
+keywords = ["git", "history", "archaeology", "cli", "tui"]
+categories = ["command-line-utilities", "development-tools"]
+authors = ["Wyatt Lamberth"]
 
 [dependencies]
 clap = "4.0"
