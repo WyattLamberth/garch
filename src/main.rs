@@ -112,7 +112,7 @@ fn parse_file_range(file_range: &str) -> (String, usize, usize) {
 
 fn get_line_history(file_path: &str, start_line: usize, end_line: usize) -> Result<Vec<CommitInfo>, String> {
     let range = format!("{},{}", start_line, end_line);
-    let _output = ProcessCommand::new("git")
+    let output = ProcessCommand::new("git")
         .args([
             "log",
             "-L", &format!("{}:{}", range, file_path),
