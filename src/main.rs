@@ -9,7 +9,7 @@ use std::io::{self, Write};
 use std::process::Command as ProcessCommand;
 use std::str;
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{ThemeSet, Style};
+use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
 use syntect::util::as_24_bit_terminal_escaped;
 
@@ -56,19 +56,32 @@ struct FileVersion {
 
 fn main() {
     let matches = Command::new("garch")
-        .about("Explore the evolution of code through git history")
+        .version("0.1.0")
+        .about("🔍 Git Archaeology - Explore the evolution of code through git history")
+        .long_about("garch transforms your git history into an interactive timeline, allowing you to trace \
+                    the evolution of any file or specific lines through time. Navigate through commits \
+                    to see how code has changed, who changed it, and when.")
         .subcommand(
             Command::new("lines")
-                .about("Trace the evolution of specific lines in a file")
+                .about("📏 Trace the evolution of specific lines in a file")
+                .long_about("Focus on a specific range of lines and see how they evolved across commits. \
+                           Perfect for understanding how a particular function or section of code developed.")
                 .arg(
                     Arg::new("file_range")
-                        .help("File and line range (e.g., src/main.rs:10-20)")
+                        .help("File and line range to analyze")
+                        .long_help("Specify the file and line range in the format: path/to/file.ext:start-end\n\
+                                   Examples:\n  \
+                                   src/main.rs:10-20    (lines 10 through 20)\n  \
+                                   lib.py:50            (just line 50)\n  \
+                                   config.json:1-10     (first 10 lines)")
                         .required(true)
                         .index(1)
                 )
                 .arg(
                     Arg::new("reverse")
-                        .help("Show newest first instead of oldest first")
+                        .help("Show newest commits first instead of oldest first")
+                        .long_help("By default, garch shows the oldest commits first (left) and newest last (right). \
+                                   Use --reverse to start with the newest commits and navigate backwards in time.")
                         .long("reverse")
                         .short('r')
                         .action(clap::ArgAction::SetTrue)
@@ -76,21 +89,39 @@ fn main() {
         )
         .subcommand(
             Command::new("file")
-                .about("Show the evolution of an entire file")
+                .about("📄 Show the evolution of an entire file")
+                .long_about("View the complete history of a file from its first commit to the present. \
+                           Navigate through time to see all changes, additions, and modifications.")
                 .arg(
                     Arg::new("file_path")
-                        .help("Path to the file")
+                        .help("Path to the file to analyze")
+                        .long_help("Specify the path to any file in your git repository.\n\
+                                   Examples:\n  \
+                                   src/main.rs\n  \
+                                   docs/README.md\n  \
+                                   package.json")
                         .required(true)
                         .index(1)
                 )
                 .arg(
                     Arg::new("reverse")
-                        .help("Show newest first instead of oldest first")
+                        .help("Show newest commits first instead of oldest first")
+                        .long_help("By default, garch shows the oldest commits first (left) and newest last (right). \
+                                   Use --reverse to start with the newest commits and navigate backwards in time.")
                         .long("reverse")
                         .short('r')
                         .action(clap::ArgAction::SetTrue)
                 )
         )
+        .after_help("INTERACTIVE NAVIGATION:\n  \
+                     ← → : Navigate between commits (older/newer)\n  \
+                     ↑ ↓ : Scroll up/down within the current view\n  \
+                     Mouse: Scroll with mouse wheel\n  \
+                     q   : Quit\n\n\
+                     EXAMPLES:\n  \
+                     garch lines src/main.rs:100-200    # Trace lines 100-200\n  \
+                     garch file README.md               # View entire file history\n  \
+                     garch lines lib.py:50 --reverse    # Start from newest commits")
         .get_matches();
 
     match matches.subcommand() {
@@ -105,7 +136,19 @@ fn main() {
             handle_file_command(file_path, reverse);
         }
         _ => {
-            println!("Use 'garch --help' for usage information");
+            println!("🔍 Git Archaeology (garch) - Explore code evolution through time\n");
+            println!("USAGE:");
+            println!("  garch <SUBCOMMAND> [OPTIONS]\n");
+            println!("COMMANDS:");
+            println!("  lines <file:range>  Trace specific lines (e.g., src/main.rs:10-20)");
+            println!("  file <file>         View entire file history\n");
+            println!("OPTIONS:");
+            println!("  -r, --reverse       Start with newest commits first\n");
+            println!("EXAMPLES:");
+            println!("  garch lines src/main.rs:100-200    # Trace lines 100-200");
+            println!("  garch file README.md               # View file history");
+            println!("  garch lines lib.py:50 --reverse    # Start from newest\n");
+            println!("For detailed help: garch --help");
         }
     }
 }
@@ -453,12 +496,23 @@ fn parse_blame_output_with_highlighting(blame_text: &str, file_path: &str) -> Ve
                 }
                 
                 // Apply syntax highlighting to this line
-                let highlighted_content = if content.len() > 200 {
-                    // For very long lines, skip highlighting for performance
+                let highlighted_content = if content.len() > 200 || content.trim().is_empty() {
+                    // For very long lines or empty lines, skip highlighting for performance/stability
                     content.clone()
                 } else {
-                    let ranges: Vec<(Style, &str)> = h.highlight_line(&content, &ps).unwrap_or_default();
-                    as_24_bit_terminal_escaped(&ranges[..], false)
+                    // Try to apply syntax highlighting, fallback to plain text on any error
+                    match h.highlight_line(&content, &ps) {
+                        Ok(ranges) => {
+                            let escaped = as_24_bit_terminal_escaped(&ranges[..], false);
+                            // Ensure the highlighted content ends with a reset sequence
+                            if escaped.contains('\x1b') && !escaped.ends_with("\x1b[0m") {
+                                format!("{}\x1b[0m", escaped)
+                            } else {
+                                escaped
+                            }
+                        }
+                        Err(_) => content.clone(), // Fallback to plain text
+                    }
                 };
                 
                 blame_lines.push(BlameLine {
@@ -481,29 +535,50 @@ fn parse_blame_output_with_highlighting(blame_text: &str, file_path: &str) -> Ve
     blame_lines
 }
 
-fn run_interactive_viewer(file_path: &str, versions: Vec<FileVersion>, start_line: usize, end_line: usize) -> Result<(), Box<dyn std::error::Error>> {
+fn run_interactive_viewer(file_path: &str, versions: Vec<FileVersion>, _start_line: usize, _end_line: usize) -> Result<(), Box<dyn std::error::Error>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     
     let mut current_version = 0;
     let mut scroll_offset = 0;
-    let mut target_line: Option<usize> = None; // Track the line we're trying to stay close to
+    // Temporarily disable target line tracking to fix basic scrolling
+    // let mut target_line: Option<usize> = None;
 
     loop {
         let (terminal_width, terminal_height) = crossterm::terminal::size()?;
         let content_height = terminal_height as usize - 4; // Reserve space for 3-line header + 1-line footer
 
-        // Clear screen and draw content
-        execute!(stdout, crossterm::terminal::Clear(crossterm::terminal::ClearType::All))?;
+        // Calculate filtered lines first so they're available for both display and navigation
+        let version = &versions[current_version];
+        
+        let filtered_lines: Vec<&BlameLine> = version.blame_lines.iter()
+            .collect(); // Show all lines, don't filter by line range
+
+        // Smart bounds checking - try to preserve the viewing position
+        let max_scroll = if filtered_lines.len() <= content_height {
+            0
+        } else {
+            filtered_lines.len() - content_height
+        };
+        
+        // Ensure scroll_offset is within valid bounds - this is critical!
+        scroll_offset = scroll_offset.min(max_scroll);
+        
+        // Double-check: if we have any lines at all, scroll_offset should never exceed the array bounds
+        if !filtered_lines.is_empty() && scroll_offset >= filtered_lines.len() {
+            scroll_offset = 0; // Reset to top if we're somehow out of bounds
+        }
+
+        // Move to top and clear the screen - but do it all at once
         execute!(stdout, crossterm::cursor::MoveTo(0, 0))?;
+        execute!(stdout, crossterm::terminal::Clear(crossterm::terminal::ClearType::All))?;
 
         // Header with colors
-        let version = &versions[current_version];
         execute!(stdout, SetForegroundColor(Color::White), SetBackgroundColor(Color::DarkBlue))?;
 
         // Main header line with file, version number, and date
-        let header_text = format!("📜 {} │ {} of {} │ 📅 {}",
+        let header_text = format!("{} | {} of {} | {}",
             file_path,
             current_version + 1,
             versions.len(),
@@ -525,7 +600,7 @@ fn run_interactive_viewer(file_path: &str, versions: Vec<FileVersion>, start_lin
         } else {
             &version.commit_hash
         };
-        let commit_line = format!("🔗 {} │ {}", commit_short, version.commit_message);
+        let commit_line = format!("{} | {}", commit_short, version.commit_message);
 
         // Truncate commit message if too long
         let max_commit_line_len = terminal_width as usize;
@@ -547,42 +622,27 @@ fn run_interactive_viewer(file_path: &str, versions: Vec<FileVersion>, start_lin
         println!("{}\r", "─".repeat(terminal_width as usize));
         execute!(stdout, ResetColor)?;
 
-        // Content with colors (filtered by line range)
-        // Adjust end_line if it exceeds the available lines in this version
-        let max_line_in_version = version.blame_lines.iter()
-            .map(|line| line.line_number)
-            .max()
-            .unwrap_or(0);
+        // Ensure we're in a clean state before drawing content
+        execute!(stdout, ResetColor, SetBackgroundColor(Color::Reset))?;
 
-        let adjusted_end_line = if end_line > max_line_in_version {
-            max_line_in_version
-        } else {
-            end_line
-        };
-
-        let filtered_lines: Vec<&BlameLine> = version.blame_lines.iter()
-            .filter(|line| line.line_number >= start_line && line.line_number <= adjusted_end_line)
-            .collect();
-
-        // If we have a target line, try to position the view around it
-        if let Some(target) = target_line {
-            if let Some(closest_pos) = find_closest_line_in_filtered(&filtered_lines, target) {
-                // Center the view around the closest line
-                scroll_offset = closest_pos.saturating_sub(content_height / 2);
-                if scroll_offset + content_height > filtered_lines.len() {
-                    scroll_offset = filtered_lines.len().saturating_sub(content_height);
-                }
-            }
-        }
+        // Content with colors (filtered lines already calculated above)
         
         let display_end = (scroll_offset + content_height).min(filtered_lines.len());
         let mut last_author = String::new();
         let content_width = terminal_width as usize - 20; // Reserve space for line numbers and margins
+        let mut lines_displayed = 0; // Track actual screen lines used
         
         for i in scroll_offset..display_end {
             if let Some(line) = filtered_lines.get(i) {
                 // Check if we need to show author info (first line or author changed)
                 let show_author = last_author != line.author;
+                
+                // Stop if we would exceed screen space (accounting for author headers)
+                let lines_needed = if show_author { 2 } else { 1 }; // Author header + content line
+                if lines_displayed + lines_needed > content_height {
+                    break;
+                }
+                
                 if show_author {
                     last_author = line.author.clone();
                     
@@ -598,15 +658,12 @@ fn run_interactive_viewer(file_path: &str, versions: Vec<FileVersion>, start_lin
                     print!("{}", line.commit_message);
                     execute!(stdout, ResetColor)?;
                     println!("\r");
+                    lines_displayed += 1;
                 }
                 
                 // Line number with proper spacing
                 execute!(stdout, SetForegroundColor(Color::DarkGrey))?;
-                if show_author {
-                    print!("│ {:3} │ ", line.line_number);
-                } else {
-                    print!("│ {:3} │ ", line.line_number);
-                }
+                print!("│ {:3} │ ", line.line_number);
                 execute!(stdout, ResetColor)?;
                 
                 // Content with line wrapping - use pre-rendered highlighted content
@@ -616,6 +673,7 @@ fn run_interactive_viewer(file_path: &str, versions: Vec<FileVersion>, start_lin
                 if content.len() <= content_width {
                     // Single line - no wrapping needed
                     println!("{}\r", highlighted_content);
+                    lines_displayed += 1;
                 } else {
                     // For long lines, just truncate to avoid wrapping complexity with ANSI codes
                     if content.len() > content_width {
@@ -625,15 +683,17 @@ fn run_interactive_viewer(file_path: &str, versions: Vec<FileVersion>, start_lin
                     } else {
                         println!("{}\r", highlighted_content);
                     }
+                    lines_displayed += 1;
                 }
             }
         }
         // Footer with colors
         execute!(stdout, crossterm::cursor::MoveTo(0, terminal_height - 1))?;
         execute!(stdout, SetForegroundColor(Color::White), SetBackgroundColor(Color::DarkGrey))?;
-        print!("← Older    Newer → │ ↑ ↓ : Scroll │ Mouse: Scroll │ q : Quit");
+        let footer_text = format!("← Older    Newer → │ ↑ ↓ : Scroll │ Debug: scroll={} lines={} max={} │ q : Quit", 
+            scroll_offset, filtered_lines.len(), max_scroll);
+        print!("{}", footer_text);
         // Pad footer to full width
-        let footer_text = "← Older    Newer → │ ↑ ↓ : Scroll │ Mouse: Scroll │ q : Quit";
         if footer_text.len() < terminal_width as usize {
             print!("{}", " ".repeat(terminal_width as usize - footer_text.len()));
         }
@@ -648,45 +708,52 @@ fn run_interactive_viewer(file_path: &str, versions: Vec<FileVersion>, start_lin
                         KeyCode::Char('q') => break,
                         KeyCode::Left => {
                             if current_version > 0 {
-                                // Capture current target line before switching
-                                target_line = Some(get_current_target_line(&filtered_lines, scroll_offset, content_height));
                                 current_version -= 1;
+                                // Don't reset scroll immediately - let the bounds checking handle it
                             }
                         }
                         KeyCode::Right => {
                             if current_version < versions.len() - 1 {
-                                // Capture current target line before switching
-                                target_line = Some(get_current_target_line(&filtered_lines, scroll_offset, content_height));
                                 current_version += 1;
+                                // Don't reset scroll immediately - let the bounds checking handle it
                             }
                         }
                         KeyCode::Up => {
                             if scroll_offset > 0 {
                                 scroll_offset -= 1;
-                                target_line = None; // Clear target line on manual scroll
                             }
                         }
                         KeyCode::Down => {
-                            if scroll_offset + content_height < filtered_lines.len() {
+                            let max_scroll = if filtered_lines.len() > content_height {
+                                filtered_lines.len() - content_height
+                            } else {
+                                0
+                            };
+                            if scroll_offset < max_scroll {
                                 scroll_offset += 1;
-                                target_line = None; // Clear target line on manual scroll
                             }
                         }
                         KeyCode::PageUp => {
                             scroll_offset = scroll_offset.saturating_sub(content_height / 2);
-                            target_line = None; // Clear target line on manual scroll
                         }
                         KeyCode::PageDown => {
-                            scroll_offset = (scroll_offset + content_height / 2).min(filtered_lines.len().saturating_sub(content_height));
-                            target_line = None; // Clear target line on manual scroll
+                            let max_scroll = if filtered_lines.len() > content_height {
+                                filtered_lines.len() - content_height
+                            } else {
+                                0
+                            };
+                            scroll_offset = (scroll_offset + content_height / 2).min(max_scroll);
                         }
                         KeyCode::Home => {
                             scroll_offset = 0;
-                            target_line = None; // Clear target line on manual scroll
                         }
                         KeyCode::End => {
-                            scroll_offset = filtered_lines.len().saturating_sub(content_height);
-                            target_line = None; // Clear target line on manual scroll
+                            let max_scroll = if filtered_lines.len() > content_height {
+                                filtered_lines.len() - content_height
+                            } else {
+                                0
+                            };
+                            scroll_offset = max_scroll;
                         }
                         _ => {}
                     }
@@ -696,7 +763,6 @@ fn run_interactive_viewer(file_path: &str, versions: Vec<FileVersion>, start_lin
                 match mouse.kind {
                     MouseEventKind::ScrollUp => {
                         scroll_offset = scroll_offset.saturating_sub(3); // Scroll 3 lines at a time
-                        target_line = None; // Clear target line on manual scroll
                     }
                     MouseEventKind::ScrollDown => {
                         let max_scroll = if filtered_lines.len() > content_height {
@@ -705,7 +771,6 @@ fn run_interactive_viewer(file_path: &str, versions: Vec<FileVersion>, start_lin
                             0
                         };
                         scroll_offset = (scroll_offset + 3).min(max_scroll);
-                        target_line = None; // Clear target line on manual scroll
                     }
                     _ => {}
                 }
