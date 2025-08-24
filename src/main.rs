@@ -1,8 +1,8 @@
 use clap::{Arg, Command};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind, DisableMouseCapture, EnableMouseCapture},
+    event::{self, Event, KeyCode, KeyEventKind, MouseEventKind},
     execute,
-    style::{Color, Print, ResetColor, SetForegroundColor, SetBackgroundColor},
+    style::{Color, ResetColor, SetForegroundColor, SetBackgroundColor},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use std::io::{self, Write};
@@ -423,24 +423,75 @@ fn run_interactive_viewer(file_path: &str, versions: Vec<FileVersion>, start_lin
         let filtered_lines: Vec<&BlameLine> = version.blame_lines.iter()
             .filter(|line| line.line_number >= start_line && line.line_number <= end_line)
             .collect();
+        
         let display_end = (scroll_offset + content_height - 1).min(filtered_lines.len());
+        let mut last_author = String::new();
+        let content_width = terminal_width as usize - 20; // Reserve space for line numbers and margins
+        
         for i in scroll_offset..display_end {
             if let Some(line) = filtered_lines.get(i) {
-                // Line number
+                // Check if we need to show author info (first line or author changed)
+                let show_author = last_author != line.author;
+                if show_author {
+                    last_author = line.author.clone();
+                    
+                    // Author header line with color
+                    let author_color = get_author_color(&line.author);
+                    execute!(stdout, SetForegroundColor(author_color))?;
+                    print!("┌─ {} ", line.author);
+                    execute!(stdout, SetForegroundColor(Color::DarkGrey))?;
+                    print!("({}) ", line.date);
+                    execute!(stdout, ResetColor)?;
+                    println!("\r");
+                }
+                
+                // Line number with proper spacing
                 execute!(stdout, SetForegroundColor(Color::DarkGrey))?;
-                print!("{:3} │ ", line.line_number);
+                if show_author {
+                    print!("│ {:3} │ ", line.line_number);
+                } else {
+                    print!("│ {:3} │ ", line.line_number);
+                }
                 execute!(stdout, ResetColor)?;
-                // Author with color
-                let author_color = get_author_color(&line.author);
-                execute!(stdout, SetForegroundColor(author_color))?;
-                print!("{:8}", line.author);
-                execute!(stdout, ResetColor)?;
-                // Date
-                execute!(stdout, SetForegroundColor(Color::DarkGrey))?;
-                print!(" │ {:10} │ ", line.date);
-                execute!(stdout, ResetColor)?;
-                // Content
-                println!("{}\r", line.content);
+                
+                // Content with line wrapping
+                let content = &line.content;
+                if content.len() <= content_width {
+                    // Single line - no wrapping needed
+                    println!("{}\r", content);
+                } else {
+                    // Multi-line wrapping
+                    let mut remaining = content.as_str();
+                    let mut is_first_line = true;
+                    
+                    while !remaining.is_empty() {
+                        let chunk_size = content_width.min(remaining.len());
+                        let mut split_pos = chunk_size;
+                        
+                        // Try to break at word boundary if possible
+                        if split_pos < remaining.len() {
+                            if let Some(space_pos) = remaining[..chunk_size].rfind(' ') {
+                                if space_pos > chunk_size * 2 / 3 { // Only if break point is reasonable
+                                    split_pos = space_pos;
+                                }
+                            }
+                        }
+                        
+                        let chunk = &remaining[..split_pos];
+                        remaining = remaining[split_pos..].trim_start();
+                        
+                        if is_first_line {
+                            println!("{}\r", chunk);
+                            is_first_line = false;
+                        } else {
+                            // Continuation line
+                            execute!(stdout, SetForegroundColor(Color::DarkGrey))?;
+                            print!("│     │ ");
+                            execute!(stdout, ResetColor)?;
+                            println!("{}\r", chunk);
+                        }
+                    }
+                }
             }
         }
         // Footer with colors
