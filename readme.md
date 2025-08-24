@@ -18,10 +18,16 @@ Most files exist only in the present moment - you can't step back through time t
 
 ## Installation
 
+### From crates.io (Recommended)
+
+```bash
+cargo install garch
+```
+
 ### From Source
 
 ```bash
-git clone https://github.com/yourusername/garch
+git clone https://github.com/wyattlamberth/garch
 cd garch
 cargo install --path .
 ```
